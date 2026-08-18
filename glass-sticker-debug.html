@@ -334,6 +334,9 @@ stickerUpload.addEventListener('change',e=>{ const fl=e.target.files; loadImages
 const stickerFolder=document.getElementById('stickerFolder');
 stickerFolder.addEventListener('change',e=>{ const fl=e.target.files; loadImages(fl).then(applyImages); e.target.value=''; });
 
+/* expose key objects for console debugging */
+window.stickerDebug={atlas,atlasCanvas,atlasCtx,sMesh,particles,renderer,scene,camera,fbo,stickerMat,quadScene,quadCam};
+
 /* ============================================================
  *  主循环
  * ============================================================ */
