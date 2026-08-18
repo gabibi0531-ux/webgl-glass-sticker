@@ -1,0 +1,6 @@
+# WorkBuddy 记忆与会话数据，不纳入版本控制
+.workbuddy/
+
+# 系统/编辑器
+.DS_Store
+*.log
