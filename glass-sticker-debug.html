@@ -98,14 +98,17 @@ const fbo=new THREE.WebGLRenderTarget(innerWidth,innerHeight,{samples:4});
 const COLS=8, ROWS=8, CELL=512;     // 图集 8 列 × 8 行，最多 64 个贴纸（上传后整体替换默认 12 款）
 const INK='#1c1c1c',GREEN='#7fb069',PINE='#2d4a3e',CREAM='#f0efe9',RUST='#c96f4a';
 const MAX_STICKERS=COLS*ROWS;        // 贴纸种类上限
-let atlasCanvas=null, atlasCtx=null; // 图集 canvas，供运行时整体替换贴纸
+const TEX_MAX=2048;                        // 图集纹理像素上限：规避个别 GPU 不支持超大纹理（4096²）导致贴纸全部 discard 不显示
+let atlasCanvas=null, atlasCtx=null, atlasScale=1; // 图集 canvas，供运行时整体替换贴纸
 let customImages=[];                 // 已上传贴纸的 Image 列表；非空时整体替换默认 12 款
 function totalStickers(){ return customImages.length>0 ? customImages.length : 12; }
 function makeStickerAtlas(){
-  const c=document.createElement('canvas');c.width=COLS*CELL;c.height=ROWS*CELL;
-  const ctx=c.getContext('2d');atlasCanvas=c;atlasCtx=ctx;
+  const w=COLS*CELL, h=ROWS*CELL;              // 设计坐标尺寸（绘图按 512 单元格设计，保持不变）
+  const s=Math.min(1, TEX_MAX/Math.max(w,h));  // 实际纹理缩放，保证像素 ≤ TEX_MAX，规避超大纹理不显示
+  const c=document.createElement('canvas'); c.width=Math.round(w*s); c.height=Math.round(h*s);
+  const ctx=c.getContext('2d'); atlasCanvas=c; atlasCtx=ctx; atlasScale=s;
   drawDefault(ctx);
-  const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=4;return tex;
+  const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.anisotropy=4; tex.needsUpdate=true; return tex;
 }
 
 /* —— 形状 / 默认贴纸 / 上传贴纸（模块级，供运行时整体重建图集）—— */
@@ -131,8 +134,10 @@ const painters=[
   (ctx,x,y)=>{stickerBase(ctx,x,y,diamond);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);[70,45,20].forEach((r,i)=>{ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.fillStyle=[PINE,CREAM,RUST][i];ctx.fill();ctx.lineWidth=4;ctx.strokeStyle=INK;ctx.stroke();});ctx.restore();}
 ];
 function drawDefault(ctx){
+  ctx.save(); ctx.setTransform(atlasScale,0,0,atlasScale,0,0);   // 缩放到设计坐标：绘图代码保持 512 设计不变，纹理实际像素被 TEX_MAX 限制
   painters.forEach((fn,i)=>{const col=i%COLS,row=Math.floor(i/COLS);fn(ctx,col*CELL,row*CELL);});
-  ctx.globalAlpha=0.05;for(let i=0;i<9000;i++){ctx.fillStyle=Math.random()<0.5?'#000':'#fff';ctx.fillRect(Math.random()*atlasCanvas.width,Math.random()*atlasCanvas.height,2,2);}ctx.globalAlpha=1;
+  ctx.globalAlpha=0.05;for(let i=0;i<9000;i++){ctx.fillStyle=Math.random()<0.5?'#000':'#fff';ctx.fillRect(Math.random()*COLS*CELL,Math.random()*ROWS*CELL,2,2);}ctx.globalAlpha=1;
+  ctx.restore();
 }
 function drawImageCell(ctx,img,cell){
   const col=cell%COLS, row=Math.floor(cell/COLS), x=col*CELL, y=row*CELL;
@@ -147,8 +152,9 @@ function drawImageCell(ctx,img,cell){
   ctx.restore();
 }
 function rebuildAtlas(){
-  const ctx=atlasCtx; ctx.clearRect(0,0,atlasCanvas.width,atlasCanvas.height);
-  if(customImages.length>0){ customImages.forEach((img,i)=>drawImageCell(ctx,img,i)); }
+  const ctx=atlasCtx;
+  ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,atlasCanvas.width,atlasCanvas.height); ctx.restore();
+  if(customImages.length>0){ ctx.save(); ctx.setTransform(atlasScale,0,0,atlasScale,0,0); customImages.forEach((img,i)=>drawImageCell(ctx,img,i)); ctx.restore(); }
   else { drawDefault(ctx); }
   atlas.needsUpdate=true;
 }
