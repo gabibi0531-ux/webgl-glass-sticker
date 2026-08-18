@@ -29,6 +29,12 @@
   /* lil-gui 微调位置/字号 */
   .lil-gui { --width: 300px; font-size: 12px; z-index: 50; }
   .lil-gui.root > .title { font-weight: 600; }
+
+  /* 上传状态提示 */
+  #status{position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:60;padding:8px 14px;border-radius:10px;
+    background:rgba(21,23,23,0.9);color:#fff;font:12px/1.4 ui-sans-serif,system-ui,sans-serif;opacity:0;
+    transition:opacity .25s;pointer-events:none;max-width:80vw;text-align:center;white-space:nowrap;}
+  #status.show{opacity:1;}
 </style>
 </head>
 <body>
@@ -36,6 +42,7 @@
 <div id="tip">右上角面板可实时调参 · 移动鼠标画面扭曲跟随 · 点击空白爆发（可在面板关闭）· 可上传图片/文件夹整体替换贴纸</div>
 <input id="stickerUpload" type="file" accept="image/*" multiple style="display:none">
 <input id="stickerFolder" type="file" accept="image/*" webkitdirectory directory multiple style="display:none">
+<div id="status"></div>
 
 <script type="importmap">
 {
@@ -282,26 +289,45 @@ function syncAmbient(){
 /* ============================================================
  *  贴纸通道：上传图片 / 上传文件夹 —— 整体替换默认贴纸
  * ============================================================ */
+function showStatus(msg){
+  const el=document.getElementById('status');
+  el.textContent=msg; el.classList.add('show');
+  clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove('show'),2800);
+}
 function loadImages(files){
-  const imgs=Array.from(files).filter(f=>f.type && f.type.startsWith('image/'));
-  return Promise.all(imgs.map(f=>new Promise((res,rej)=>{
-    const img=new Image();
-    img.onload=()=>res(img);
-    img.onerror=rej;
-    img.src=URL.createObjectURL(f);
-  }))).then(out=>{ out.forEach(img=>URL.revokeObjectURL(img.src)); return out; });
+  // 接受 image/* 以及无 type 的文件（部分浏览器/格式 type 为空，仍尝试解码）
+  const list=Array.from(files).filter(f=>!f.type || f.type.startsWith('image/'));
+  if(!list.length){ showStatus('未检测到图片文件，请选择图片'); return Promise.resolve([]); }
+  // 用 allSettled：单张失败不连累整体
+  return Promise.allSettled(list.map(f=>new Promise((res,rej)=>{
+    const img=new Image(); const url=URL.createObjectURL(f);
+    img.onload=()=>{ img._url=url; res(img); };                       // 记下 blob URL，待绘制完成后再释放
+    img.onerror=()=>{ URL.revokeObjectURL(url); rej(f.name||'图片'); };
+    img.src=url;
+  }))).then(results=>{
+    const ok=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+    const bad=results.length-ok.length;
+    if(bad) showStatus('已跳过 '+bad+' 张无法加载的图片（如 HEIC 等浏览器不支持的格式）');
+    return ok;
+  });
 }
 function applyImages(imgs){
-  if(!imgs.length) return;
-  if(imgs.length>MAX_STICKERS){ alert('贴纸数量过多（上限 '+MAX_STICKERS+'），仅保留前 '+MAX_STICKERS+' 张'); imgs=imgs.slice(0,MAX_STICKERS); }
-  customImages=imgs; rebuildAtlas();
+  if(!imgs || !imgs.length) return;
+  if(imgs.length>MAX_STICKERS){ showStatus('贴纸超过上限 '+MAX_STICKERS+'，仅保留前 '+MAX_STICKERS+' 张'); imgs=imgs.slice(0,MAX_STICKERS); }
+  customImages=imgs;
+  try{ rebuildAtlas(); }
+  catch(e){ showStatus('绘制贴纸失败：'+(e&&e.message||e)); return; }
+  // 绘制完成后再释放 blob URL，避免个别浏览器在释放后丢弃已解码图像
+  imgs.forEach(img=>{ if(img._url){ URL.revokeObjectURL(img._url); img._url=null; } });
   particles.forEach(p=>{ if(!p.dead) p.idx=Math.floor(Math.random()*totalStickers()); });   // 重新分配索引，避免新旧混搭
   P.stickerCount=customImages.length;
+  showStatus('已用 '+customImages.length+' 张图片整体替换贴纸');
 }
 function restoreDefault(){
   customImages=[]; rebuildAtlas();
   particles.forEach(p=>{ if(!p.dead) p.idx=Math.floor(Math.random()*totalStickers()); });
   P.stickerCount=12;
+  showStatus('已恢复默认 12 款贴纸');
 }
 const stickerUpload=document.getElementById('stickerUpload');
 stickerUpload.addEventListener('change',e=>{ const fl=e.target.files; loadImages(fl).then(applyImages); e.target.value=''; });
