@@ -29,20 +29,11 @@
   /* lil-gui 微调位置/字号 */
   .lil-gui { --width: 300px; font-size: 12px; z-index: 50; }
   .lil-gui.root > .title { font-weight: 600; }
-
-  /* 上传状态提示 */
-  #status{position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:60;padding:8px 14px;border-radius:10px;
-    background:rgba(21,23,23,0.9);color:#fff;font:12px/1.4 ui-sans-serif,system-ui,sans-serif;opacity:0;
-    transition:opacity .25s;pointer-events:none;max-width:80vw;text-align:center;white-space:nowrap;}
-  #status.show{opacity:1;}
 </style>
 </head>
 <body>
 <div id="loader"><div class="track"><div class="fill" id="loaderFill"></div></div></div>
-<div id="tip">右上角面板可实时调参 · 移动鼠标画面扭曲跟随 · 点击空白爆发（可在面板关闭）· 可上传图片/文件夹整体替换贴纸</div>
-<input id="stickerUpload" type="file" accept="image/*" multiple style="display:none">
-<input id="stickerFolder" type="file" accept="image/*" webkitdirectory directory multiple style="display:none">
-<div id="status"></div>
+<div id="tip">右上角面板可实时调参 · 移动鼠标画面扭曲跟随 · 点击空白处爆发贴纸</div>
 
 <script type="importmap">
 {
@@ -73,11 +64,7 @@ const P = {
   burstCount:   14,
   // —— 背景扭曲 ——
   mixRadius:    0.72,
-  amplitude:    0.55,
-
-  // —— 交互 / 通道 ——
-  clickBurst:   true,    // 点击空白是否爆发贴纸（可在面板关闭）
-  stickerCount: 12       // 当前贴纸种类数（只读显示）
+  amplitude:    0.55
 };
 
 /* ============================================================
@@ -97,83 +84,50 @@ const camera=new THREE.PerspectiveCamera(P.fov,innerWidth/innerHeight,0.1,200);
 camera.position.set(0,0,30);
 camera.lookAt(0,0,0);
 
-const fbo=new THREE.WebGLRenderTarget(innerWidth,innerHeight); // 去掉 samples:4，避免部分 GPU 上多采样 FBO resolve 不完整导致贴纸丢失
+const fbo=new THREE.WebGLRenderTarget(innerWidth,innerHeight,{samples:4});
 
 /* ============================================================
  *  贴纸系统
  * ============================================================ */
-const COLS=8, ROWS=8, CELL=512;     // 图集 8 列 × 8 行，最多 64 个贴纸（上传后整体替换默认 12 款）
-const INK='#1c1c1c',GREEN='#7fb069',PINE='#2d4a3e',CREAM='#f0efe9',RUST='#c96f4a';
-const MAX_STICKERS=COLS*ROWS;        // 贴纸种类上限
-const TEX_MAX=2048;                        // 图集纹理像素上限：规避个别 GPU 不支持超大纹理（4096²）导致贴纸全部 discard 不显示
-let atlasCanvas=null, atlasCtx=null, atlasScale=1; // 图集 canvas，供运行时整体替换贴纸
-let customImages=[];                 // 已上传贴纸的 Image 列表；非空时整体替换默认 12 款
-function totalStickers(){ return customImages.length>0 ? customImages.length : 12; }
 function makeStickerAtlas(){
-  const w=COLS*CELL, h=ROWS*CELL;              // 设计坐标尺寸（绘图按 512 单元格设计，保持不变）
-  const s=Math.min(1, TEX_MAX/Math.max(w,h));  // 实际纹理缩放，保证像素 ≤ TEX_MAX，规避超大纹理不显示
-  const c=document.createElement('canvas'); c.width=Math.round(w*s); c.height=Math.round(h*s);
-  const ctx=c.getContext('2d'); atlasCanvas=c; atlasCtx=ctx; atlasScale=s;
-  drawDefault(ctx);
-  const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.anisotropy=4; tex.needsUpdate=true; return tex;
-}
-
-/* —— 形状 / 默认贴纸 / 上传贴纸（模块级，供运行时整体重建图集）—— */
-function stickerBase(ctx,x,y,shape){ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();shape(ctx,190);ctx.fillStyle='#fff';ctx.fill();ctx.lineWidth=10;ctx.strokeStyle=INK;ctx.stroke();ctx.beginPath();shape(ctx,150);ctx.fillStyle=CREAM;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();}
-const circle=(g,r)=>g.arc(0,0,r,0,Math.PI*2);
-const blob=(g,r)=>{g.moveTo(r,0);for(let a=0;a<=Math.PI*2+0.1;a+=Math.PI/5){const rr=r*(0.82+0.18*Math.sin(a*3));g.lineTo(Math.cos(a)*rr,Math.sin(a)*rr);}};
-const star5=(g,r)=>{for(let i=0;i<10;i++){const a=i*Math.PI/5-Math.PI/2,rr=i%2?r*0.45:r;g.lineTo(Math.cos(a)*rr,Math.sin(a)*rr);}g.closePath();};
-const square=(g,r)=>{const s=r*0.9;g.roundRect(-s,-s,s*2,s*2,s*0.35);};
-const diamond=(g,r)=>{g.moveTo(0,-r);g.lineTo(r*0.8,0);g.lineTo(0,r);g.lineTo(-r*0.8,0);g.closePath();};
-const heart=(g,r)=>{g.moveTo(0,r*0.7);g.bezierCurveTo(-r*1.3,-r*0.3,-r*0.5,-r*1.1,0,-r*0.35);g.bezierCurveTo(r*0.5,-r*1.1,r*1.3,-r*0.3,0,r*0.7);};
-const painters=[
-  (ctx,x,y)=>{stickerBase(ctx,x,y,blob);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);[[-58,0],[58,0]].forEach(([ex])=>{ctx.beginPath();ctx.arc(ex,0,62,0,Math.PI*2);ctx.fillStyle=GREEN;ctx.fill();ctx.beginPath();ctx.arc(ex+8,0,40,0,Math.PI*2);ctx.fillStyle=INK;ctx.fill();ctx.beginPath();ctx.moveTo(ex-12,-30);ctx.lineTo(ex+22,0);ctx.lineTo(ex-12,30);ctx.closePath();ctx.fillStyle=CREAM;ctx.fill();});ctx.restore();},
-  (ctx,x,y)=>{stickerBase(ctx,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();star5(ctx,95);ctx.fillStyle=RUST;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();},
-  (ctx,x,y)=>{stickerBase(ctx,x,y,square);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();ctx.moveTo(20,-95);ctx.lineTo(-45,10);ctx.lineTo(0,10);ctx.lineTo(-20,95);ctx.lineTo(45,-10);ctx.lineTo(0,-10);ctx.closePath();ctx.fillStyle=GREEN;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();},
-  (ctx,x,y)=>{stickerBase(ctx,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();heart(ctx,90);ctx.fillStyle=RUST;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();},
-  (ctx,x,y)=>{stickerBase(ctx,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.fillStyle=INK;[[-45,-30],[45,-30]].forEach(([ex,ey])=>{ctx.beginPath();ctx.arc(ex,ey,14,0,Math.PI*2);ctx.fill();});ctx.beginPath();ctx.arc(0,10,55,0.15*Math.PI,0.85*Math.PI);ctx.lineWidth=10;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();},
-  (ctx,x,y)=>{stickerBase(ctx,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);for(let i=0;i<6;i++){ctx.save();ctx.rotate(i*Math.PI/3);ctx.beginPath();ctx.ellipse(0,-62,30,46,0,0,Math.PI*2);ctx.fillStyle=GREEN;ctx.fill();ctx.lineWidth=5;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();}ctx.beginPath();ctx.arc(0,0,30,0,Math.PI*2);ctx.fillStyle=RUST;ctx.fill();ctx.lineWidth=5;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();},
-  (ctx,x,y)=>{stickerBase(ctx,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();ctx.arc(10,0,80,0,Math.PI*2);ctx.fillStyle=PINE;ctx.fill();ctx.beginPath();ctx.arc(45,-15,68,0,Math.PI*2);ctx.fillStyle=CREAM;ctx.fill();ctx.restore();},
-  (ctx,x,y)=>{stickerBase(ctx,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();ctx.arc(0,0,58,0,Math.PI*2);ctx.fillStyle=RUST;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();for(let i=0;i<8;i++){ctx.save();ctx.rotate(i*Math.PI/4);ctx.beginPath();ctx.moveTo(70,0);ctx.lineTo(105,0);ctx.lineWidth=9;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();}ctx.restore();},
-  (ctx,x,y)=>{stickerBase(ctx,x,y,blob);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.lineWidth=14;ctx.lineCap='round';ctx.strokeStyle=PINE;[-40,0,40].forEach(oy=>{ctx.beginPath();for(let px=-90;px<=90;px+=6){const py=oy+Math.sin(px*0.05)*16;px===-90?ctx.moveTo(px,py):ctx.lineTo(px,py);}ctx.stroke();});ctx.restore();},
-  (ctx,x,y)=>{stickerBase(ctx,x,y,square);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);[[-52,-52,GREEN],[8,-52,INK],[-52,8,INK],[8,8,RUST]].forEach(([gx,gy,col])=>{ctx.beginPath();ctx.roundRect(gx,gy,44,44,8);ctx.fillStyle=col;ctx.fill();});ctx.restore();},
-  (ctx,x,y)=>{stickerBase(ctx,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();ctx.moveTo(0,-85);ctx.lineTo(80,60);ctx.lineTo(-80,60);ctx.closePath();ctx.fillStyle=GREEN;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();ctx.beginPath();ctx.arc(0,10,18,0,Math.PI*2);ctx.fillStyle=CREAM;ctx.fill();ctx.restore();},
-  (ctx,x,y)=>{stickerBase(ctx,x,y,diamond);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);[70,45,20].forEach((r,i)=>{ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.fillStyle=[PINE,CREAM,RUST][i];ctx.fill();ctx.lineWidth=4;ctx.strokeStyle=INK;ctx.stroke();});ctx.restore();}
-];
-function drawDefault(ctx){
-  ctx.save(); ctx.setTransform(atlasScale,0,0,atlasScale,0,0);   // 缩放到设计坐标：绘图代码保持 512 设计不变，纹理实际像素被 TEX_MAX 限制
-  painters.forEach((fn,i)=>{const col=i%COLS,row=Math.floor(i/COLS);fn(ctx,col*CELL,row*CELL);});
-  ctx.globalAlpha=0.05;for(let i=0;i<9000;i++){ctx.fillStyle=Math.random()<0.5?'#000':'#fff';ctx.fillRect(Math.random()*COLS*CELL,Math.random()*ROWS*CELL,2,2);}ctx.globalAlpha=1;
-  ctx.restore();
-}
-function drawImageCell(ctx,img,cell){
-  const col=cell%COLS, row=Math.floor(cell/COLS), x=col*CELL, y=row*CELL;
-  ctx.save(); ctx.translate(x+CELL/2, y+CELL/2);
-  ctx.beginPath(); ctx.arc(0,0,190,0,Math.PI*2); ctx.fillStyle='#fff'; ctx.fill();
-  ctx.lineWidth=10; ctx.strokeStyle=INK; ctx.stroke();
-  ctx.beginPath(); ctx.arc(0,0,150,0,Math.PI*2); ctx.fillStyle=CREAM; ctx.fill();
-  ctx.lineWidth=6; ctx.strokeStyle=INK; ctx.stroke();
-  ctx.save(); ctx.beginPath(); ctx.arc(0,0,140,0,Math.PI*2); ctx.clip();
-  const ir=140, iw=img.width, ih=img.height, scale=Math.max(ir*2/iw, ir*2/ih);
-  ctx.drawImage(img, -iw*scale/2, -ih*scale/2, iw*scale, ih*scale); ctx.restore();
-  ctx.restore();
-}
-function rebuildAtlas(){
-  const ctx=atlasCtx;
-  ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,atlasCanvas.width,atlasCanvas.height); ctx.restore();
-  if(customImages.length>0){ ctx.save(); ctx.setTransform(atlasScale,0,0,atlasScale,0,0); customImages.forEach((img,i)=>drawImageCell(ctx,img,i)); ctx.restore(); }
-  else { drawDefault(ctx); }
-  atlas.needsUpdate=true;
+  const COLS=4,ROWS=3,CELL=512;
+  const c=document.createElement('canvas');c.width=COLS*CELL;c.height=ROWS*CELL;
+  const ctx=c.getContext('2d');
+  const INK='#1c1c1c',GREEN='#7fb069',PINE='#2d4a3e',CREAM='#f0efe9',RUST='#c96f4a';
+  const circle=(g,r)=>g.arc(0,0,r,0,Math.PI*2);
+  const blob=(g,r)=>{g.moveTo(r,0);for(let a=0;a<=Math.PI*2+0.1;a+=Math.PI/5){const rr=r*(0.82+0.18*Math.sin(a*3));g.lineTo(Math.cos(a)*rr,Math.sin(a)*rr);}};
+  const star5=(g,r)=>{for(let i=0;i<10;i++){const a=i*Math.PI/5-Math.PI/2,rr=i%2?r*0.45:r;g.lineTo(Math.cos(a)*rr,Math.sin(a)*rr);}g.closePath();};
+  const square=(g,r)=>{const s=r*0.9;g.roundRect(-s,-s,s*2,s*2,s*0.35);};
+  const diamond=(g,r)=>{g.moveTo(0,-r);g.lineTo(r*0.8,0);g.lineTo(0,r);g.lineTo(-r*0.8,0);g.closePath();};
+  const heart=(g,r)=>{g.moveTo(0,r*0.7);g.bezierCurveTo(-r*1.3,-r*0.3,-r*0.5,-r*1.1,0,-r*0.35);g.bezierCurveTo(r*0.5,-r*1.1,r*1.3,-r*0.3,0,r*0.7);};
+  const painters=[
+    (x,y)=>{stickerBase(ctx,CELL,x,y,blob);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);[[-58,0],[58,0]].forEach(([ex])=>{ctx.beginPath();ctx.arc(ex,0,62,0,Math.PI*2);ctx.fillStyle=GREEN;ctx.fill();ctx.beginPath();ctx.arc(ex+8,0,40,0,Math.PI*2);ctx.fillStyle=INK;ctx.fill();ctx.beginPath();ctx.moveTo(ex-12,-30);ctx.lineTo(ex+22,0);ctx.lineTo(ex-12,30);ctx.closePath();ctx.fillStyle=CREAM;ctx.fill();});ctx.restore();},
+    (x,y)=>{stickerBase(ctx,CELL,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();star5(ctx,95);ctx.fillStyle=RUST;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();},
+    (x,y)=>{stickerBase(ctx,CELL,x,y,square);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();ctx.moveTo(20,-95);ctx.lineTo(-45,10);ctx.lineTo(0,10);ctx.lineTo(-20,95);ctx.lineTo(45,-10);ctx.lineTo(0,-10);ctx.closePath();ctx.fillStyle=GREEN;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();},
+    (x,y)=>{stickerBase(ctx,CELL,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();heart(ctx,90);ctx.fillStyle=RUST;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();},
+    (x,y)=>{stickerBase(ctx,CELL,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.fillStyle=INK;[[-45,-30],[45,-30]].forEach(([ex,ey])=>{ctx.beginPath();ctx.arc(ex,ey,14,0,Math.PI*2);ctx.fill();});ctx.beginPath();ctx.arc(0,10,55,0.15*Math.PI,0.85*Math.PI);ctx.lineWidth=10;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();},
+    (x,y)=>{stickerBase(ctx,CELL,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);for(let i=0;i<6;i++){ctx.save();ctx.rotate(i*Math.PI/3);ctx.beginPath();ctx.ellipse(0,-62,30,46,0,0,Math.PI*2);ctx.fillStyle=GREEN;ctx.fill();ctx.lineWidth=5;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();}ctx.beginPath();ctx.arc(0,0,30,0,Math.PI*2);ctx.fillStyle=RUST;ctx.fill();ctx.lineWidth=5;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();},
+    (x,y)=>{stickerBase(ctx,CELL,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();ctx.arc(10,0,80,0,Math.PI*2);ctx.fillStyle=PINE;ctx.fill();ctx.beginPath();ctx.arc(45,-15,68,0,Math.PI*2);ctx.fillStyle=CREAM;ctx.fill();ctx.restore();},
+    (x,y)=>{stickerBase(ctx,CELL,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();ctx.arc(0,0,58,0,Math.PI*2);ctx.fillStyle=RUST;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();for(let i=0;i<8;i++){ctx.save();ctx.rotate(i*Math.PI/4);ctx.beginPath();ctx.moveTo(70,0);ctx.lineTo(105,0);ctx.lineWidth=9;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();}ctx.restore();},
+    (x,y)=>{stickerBase(ctx,CELL,x,y,blob);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.lineWidth=14;ctx.lineCap='round';ctx.strokeStyle=PINE;[-40,0,40].forEach(oy=>{ctx.beginPath();for(let px=-90;px<=90;px+=6){const py=oy+Math.sin(px*0.05)*16;px===-90?ctx.moveTo(px,py):ctx.lineTo(px,py);}ctx.stroke();});ctx.restore();},
+    (x,y)=>{stickerBase(ctx,CELL,x,y,square);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);[[-52,-52,GREEN],[8,-52,INK],[-52,8,INK],[8,8,RUST]].forEach(([gx,gy,col])=>{ctx.beginPath();ctx.roundRect(gx,gy,44,44,8);ctx.fillStyle=col;ctx.fill();});ctx.restore();},
+    (x,y)=>{stickerBase(ctx,CELL,x,y,circle);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();ctx.moveTo(0,-85);ctx.lineTo(80,60);ctx.lineTo(-80,60);ctx.closePath();ctx.fillStyle=GREEN;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();ctx.beginPath();ctx.arc(0,10,18,0,Math.PI*2);ctx.fillStyle=CREAM;ctx.fill();ctx.restore();},
+    (x,y)=>{stickerBase(ctx,CELL,x,y,diamond);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);[70,45,20].forEach((r,i)=>{ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.fillStyle=[PINE,CREAM,RUST][i];ctx.fill();ctx.lineWidth=4;ctx.strokeStyle=INK;ctx.stroke();});ctx.restore();}
+  ];
+  function stickerBase(ctx,CELL,x,y,shape){ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();shape(ctx,190);ctx.fillStyle='#fff';ctx.fill();ctx.lineWidth=10;ctx.strokeStyle=INK;ctx.stroke();ctx.beginPath();shape(ctx,150);ctx.fillStyle=CREAM;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();}
+  painters.forEach((fn,i)=>{const col=i%COLS,row=Math.floor(i/COLS);fn(col*CELL,row*CELL);});
+  ctx.globalAlpha=0.05;for(let i=0;i<9000;i++){ctx.fillStyle=Math.random()<0.5?'#000':'#fff';ctx.fillRect(Math.random()*c.width,Math.random()*c.height,2,2);}ctx.globalAlpha=1;
+  const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=4;return tex;
 }
 
 const atlas=makeStickerAtlas();
 const MAX=2048;
 const stickerMat=new THREE.ShaderMaterial({
-  uniforms:{uAtlas:{value:atlas}, uCols:{value:COLS}, uGrid:{value:new THREE.Vector2(COLS,ROWS)}},
+  uniforms:{uAtlas:{value:atlas}},
   vertexShader:`attribute float aIdx;attribute float aOp;varying vec2 vUv;varying float vI;varying float vO;
     void main(){vUv=uv;vI=aIdx;vO=aOp;gl_Position=projectionMatrix*modelViewMatrix*instanceMatrix*vec4(position,1.0);}`,
-  fragmentShader:`uniform sampler2D uAtlas;uniform float uCols;uniform vec2 uGrid;varying vec2 vUv;varying float vI;varying float vO;
-    void main(){float col=mod(vI,uCols);float row=floor(vI/uCols);vec2 uv=(vUv+vec2(col,row))/uGrid;
+  fragmentShader:`uniform sampler2D uAtlas;varying vec2 vUv;varying float vI;varying float vO;
+    void main(){float col=mod(vI,4.0);float row=floor(vI/4.0);vec2 uv=(vUv+vec2(col,row))/vec2(4.0,3.0);
     vec4 c=texture2D(uAtlas,uv);if(c.a*vO<0.02)discard;gl_FragColor=vec4(c.rgb,c.a*vO);}`,
   transparent:true,depthWrite:false,side:THREE.DoubleSide
 });
@@ -195,7 +149,7 @@ function spawn(origin,isOneShot){
     rotation:Math.random()*Math.PI*2,rotationSpeed:(Math.random()-0.5)*0.9*2,
     scaleBase:(isOneShot?0.85:1.1)*(1+(Math.random()-0.5)*2*P.sizeVariance),  // 基础大小(含随机度)，实时由 P.stickerSize 缩放
     windPhase:Math.random()*Math.PI*2,windAmplitude:0.3+Math.random()*P.windStrength,
-    idx:Math.floor(Math.random()*totalStickers()),isOneShot,dead:false,hasStarted:true,
+    idx:Math.floor(Math.random()*12),isOneShot,dead:false,hasStarted:true,
     emitAt:emitClock++,bornAt:performance.now()/1000,x:0,y:0,op:0
   };p.x=p.originX;p.y=p.originY;particles.push(p);
   if(isOneShot){const shots=particles.filter(q=>q.isOneShot&&!q.dead);if(shots.length>384){shots.sort((a,b)=>a.emitAt-b.emitAt);shots.slice(0,shots.length-384).forEach(q=>q.dead=true);}}
@@ -205,7 +159,7 @@ function updateStickers(dt,time){
   for(const p of particles){
     if(!p.hasStarted)continue;const age=time-p.bornAt;
     p.y-=p.fallSpeed*dt;p.x=p.originX+Math.sin(time+p.windPhase)*p.windAmplitude;p.rotation+=p.rotationSpeed*dt;p.op=Math.min(1,age*3);
-    if(p.y<-b.h/2-6){if(p.isOneShot){p.dead=true;continue;}p.originX=(Math.random()-0.5)*b.w*1.15;p.originY=b.h/2+4;p.y=p.originY;p.bornAt=time;p.idx=Math.floor(Math.random()*totalStickers());}
+    if(p.y<-b.h/2-6){if(p.isOneShot){p.dead=true;continue;}p.originX=(Math.random()-0.5)*b.w*1.15;p.originY=b.h/2+4;p.y=p.originY;p.bornAt=time;p.idx=Math.floor(Math.random()*12);}
     if(p.dead)continue;if(w>=MAX)break;
     dummy.position.set(p.x,p.y,p.originZ);dummy.rotation.z=p.rotation;const s=p.scaleBase*P.stickerSize*p.op;dummy.scale.set(s,s,s);dummy.updateMatrix();
     sMesh.setMatrixAt(w,dummy.matrix);aIdx[w]=p.idx;aOp[w]=p.op;w++;
@@ -243,7 +197,6 @@ const pointer=new THREE.Vector2(0,0);          // 归一化 -1..1
 const ndc=new THREE.Vector2();const raycaster=new THREE.Raycaster();
 addEventListener('pointermove',e=>{pointer.set((e.clientX/innerWidth)*2-1,-((e.clientY/innerHeight)*2-1));});
 addEventListener('pointerdown',e=>{
-  if(!P.clickBurst) return;          // 可在参数面板关闭点击爆发
   ndc.set((e.clientX/innerWidth)*2-1,-(e.clientY/innerHeight)*2+1);raycaster.setFromCamera(ndc,camera);
   const o=raycaster.ray.origin,d=raycaster.ray.direction,t=-o.z/d.z;
   const hit=new THREE.Vector3().copy(o).addScaledVector(d,t);
@@ -265,11 +218,6 @@ fStk.add(P,'sizeVariance',0,1,0.05).name('sizeVariance 大小随机');
 fStk.add(P,'fallSpeed',0.5,5,0.1).name('fallSpeed 下落');
 fStk.add(P,'windStrength',0,3,0.1).name('wind 风摆');
 fStk.add(P,'burstCount',2,40,1).name('burst 爆发数');
-fStk.add(P,'clickBurst').name('clickBurst 点击爆发');
-fStk.add({upload:()=>stickerUpload.click()},'upload').name('＋上传图片(整体替换)');
-fStk.add({folder:()=>stickerFolder.click()},'folder').name('＋上传文件夹(整体替换)');
-fStk.add({restore:restoreDefault},'restore').name('↺ 恢复默认贴纸');
-fStk.add(P,'stickerCount',0,MAX_STICKERS,1).name('sticker 贴纸种类数').listen().disable();
 
 const fBg=gui.addFolder('Background 背景扭曲');
 fBg.add(P,'mixRadius',0,1,0.01).name('mixRadius 影响半径').onChange(v=>dU.uMixRadius.value=v);
@@ -287,80 +235,22 @@ function syncAmbient(){
 }
 
 /* ============================================================
- *  贴纸通道：上传图片 / 上传文件夹 —— 整体替换默认贴纸
- * ============================================================ */
-function showStatus(msg){
-  const el=document.getElementById('status');
-  el.textContent=msg; el.classList.add('show');
-  clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove('show'),2800);
-}
-function loadImages(files){
-  // 接受 image/* 以及无 type 的文件（部分浏览器/格式 type 为空，仍尝试解码）
-  const list=Array.from(files).filter(f=>!f.type || f.type.startsWith('image/'));
-  if(!list.length){ showStatus('未检测到图片文件，请选择图片'); return Promise.resolve([]); }
-  // 用 allSettled：单张失败不连累整体
-  return Promise.allSettled(list.map(f=>new Promise((res,rej)=>{
-    const img=new Image(); const url=URL.createObjectURL(f);
-    img.onload=()=>{ img._url=url; res(img); };                       // 记下 blob URL，待绘制完成后再释放
-    img.onerror=()=>{ URL.revokeObjectURL(url); rej(f.name||'图片'); };
-    img.src=url;
-  }))).then(results=>{
-    const ok=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
-    const bad=results.length-ok.length;
-    if(bad) showStatus('已跳过 '+bad+' 张无法加载的图片（如 HEIC 等浏览器不支持的格式）');
-    return ok;
-  });
-}
-function applyImages(imgs){
-  if(!imgs || !imgs.length) return;
-  if(imgs.length>MAX_STICKERS){ showStatus('贴纸超过上限 '+MAX_STICKERS+'，仅保留前 '+MAX_STICKERS+' 张'); imgs=imgs.slice(0,MAX_STICKERS); }
-  customImages=imgs;
-  try{ rebuildAtlas(); }
-  catch(e){ showStatus('绘制贴纸失败：'+(e&&e.message||e)); return; }
-  // 绘制完成后再释放 blob URL，避免个别浏览器在释放后丢弃已解码图像
-  imgs.forEach(img=>{ if(img._url){ URL.revokeObjectURL(img._url); img._url=null; } });
-  particles.forEach(p=>{ if(!p.dead) p.idx=Math.floor(Math.random()*totalStickers()); });   // 重新分配索引，避免新旧混搭
-  P.stickerCount=customImages.length;
-  showStatus('已用 '+customImages.length+' 张图片整体替换贴纸');
-}
-function restoreDefault(){
-  customImages=[]; rebuildAtlas();
-  particles.forEach(p=>{ if(!p.dead) p.idx=Math.floor(Math.random()*totalStickers()); });
-  P.stickerCount=12;
-  showStatus('已恢复默认 12 款贴纸');
-}
-const stickerUpload=document.getElementById('stickerUpload');
-stickerUpload.addEventListener('change',e=>{ const fl=e.target.files; loadImages(fl).then(applyImages); e.target.value=''; });
-const stickerFolder=document.getElementById('stickerFolder');
-stickerFolder.addEventListener('change',e=>{ const fl=e.target.files; loadImages(fl).then(applyImages); e.target.value=''; });
-
-/* expose key objects for console debugging */
-window.stickerDebug={atlas,atlasCanvas,atlasCtx,sMesh,particles,renderer,scene,camera,fbo,stickerMat,quadScene,quadCam};
-
-/* ============================================================
  *  主循环
  * ============================================================ */
 const clock=new THREE.Clock();
-let firstTick=true;
 function tick(){
   requestAnimationFrame(tick);
-  try{
-    const dt=Math.min(clock.getDelta(),0.05);const time=performance.now()/1000;
+  const dt=Math.min(clock.getDelta(),0.05);const time=performance.now()/1000;
 
-    updateStickers(dt,time);
+  updateStickers(dt,time);
 
-    if(firstTick){ console.log('[StickerFall diagnostics] maxTextureSize='+renderer.capabilities.maxTextureSize,
-      'atlas='+atlas.image.width+'x'+atlas.image.height,
-      'particles='+particles.length,'sMesh.count='+sMesh.count); firstTick=false; }
+  // 扭曲 shader 鼠标位置
+  dU.uMousePos.value.lerp(new THREE.Vector2(pointer.x*0.5+0.5,pointer.y*0.5+0.5),0.06);
+  dU.uTime.value=time;
 
-    // 扭曲 shader 鼠标位置
-    dU.uMousePos.value.lerp(new THREE.Vector2(pointer.x*0.5+0.5,pointer.y*0.5+0.5),0.06);
-    dU.uTime.value=time;
-
-    // 渲染：场景→FBO→扭曲→屏幕
-    renderer.setRenderTarget(fbo);renderer.render(scene,camera);renderer.setRenderTarget(null);
-    renderer.render(quadScene,quadCam);
-  }catch(e){ console.error('StickerFall tick error:',e); }
+  // 渲染：场景→FBO→扭曲→屏幕
+  renderer.setRenderTarget(fbo);renderer.render(scene,camera);renderer.setRenderTarget(null);
+  renderer.render(quadScene,quadCam);
 }
 
 /* ============================================================
