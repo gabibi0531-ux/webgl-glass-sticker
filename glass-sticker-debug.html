@@ -97,7 +97,7 @@ const camera=new THREE.PerspectiveCamera(P.fov,innerWidth/innerHeight,0.1,200);
 camera.position.set(0,0,30);
 camera.lookAt(0,0,0);
 
-const fbo=new THREE.WebGLRenderTarget(innerWidth,innerHeight,{samples:4});
+const fbo=new THREE.WebGLRenderTarget(innerWidth,innerHeight); // 去掉 samples:4，避免部分 GPU 上多采样 FBO resolve 不完整导致贴纸丢失
 
 /* ============================================================
  *  贴纸系统
@@ -338,19 +338,26 @@ stickerFolder.addEventListener('change',e=>{ const fl=e.target.files; loadImages
  *  主循环
  * ============================================================ */
 const clock=new THREE.Clock();
+let firstTick=true;
 function tick(){
   requestAnimationFrame(tick);
-  const dt=Math.min(clock.getDelta(),0.05);const time=performance.now()/1000;
+  try{
+    const dt=Math.min(clock.getDelta(),0.05);const time=performance.now()/1000;
 
-  updateStickers(dt,time);
+    updateStickers(dt,time);
 
-  // 扭曲 shader 鼠标位置
-  dU.uMousePos.value.lerp(new THREE.Vector2(pointer.x*0.5+0.5,pointer.y*0.5+0.5),0.06);
-  dU.uTime.value=time;
+    if(firstTick){ console.log('[StickerFall diagnostics] maxTextureSize='+renderer.capabilities.maxTextureSize,
+      'atlas='+atlas.image.width+'x'+atlas.image.height,
+      'particles='+particles.length,'sMesh.count='+sMesh.count); firstTick=false; }
 
-  // 渲染：场景→FBO→扭曲→屏幕
-  renderer.setRenderTarget(fbo);renderer.render(scene,camera);renderer.setRenderTarget(null);
-  renderer.render(quadScene,quadCam);
+    // 扭曲 shader 鼠标位置
+    dU.uMousePos.value.lerp(new THREE.Vector2(pointer.x*0.5+0.5,pointer.y*0.5+0.5),0.06);
+    dU.uTime.value=time;
+
+    // 渲染：场景→FBO→扭曲→屏幕
+    renderer.setRenderTarget(fbo);renderer.render(scene,camera);renderer.setRenderTarget(null);
+    renderer.render(quadScene,quadCam);
+  }catch(e){ console.error('StickerFall tick error:',e); }
 }
 
 /* ============================================================
