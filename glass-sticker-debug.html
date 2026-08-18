@@ -29,11 +29,16 @@
   /* lil-gui 微调位置/字号 */
   .lil-gui { --width: 300px; font-size: 12px; z-index: 50; }
   .lil-gui.root > .title { font-weight: 600; }
+  #status{position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:60;background:rgba(21,23,23,0.92);color:#fff;font:13px/1.45 ui-sans-serif,system-ui,sans-serif;padding:9px 16px;border-radius:10px;opacity:0;transition:opacity .25s;pointer-events:none;max-width:82vw;text-align:center;box-shadow:0 6px 20px rgba(0,0,0,.18);}
+  #status.show{opacity:1;}
 </style>
 </head>
 <body>
 <div id="loader"><div class="track"><div class="fill" id="loaderFill"></div></div></div>
 <div id="tip">右上角面板可实时调参 · 移动鼠标画面扭曲跟随 · 点击空白处爆发贴纸</div>
+<div id="status"></div>
+<input id="stickerUpload" type="file" accept="image/*" multiple style="display:none">
+<input id="stickerFolder" type="file" accept="image/*" webkitdirectory directory multiple style="display:none">
 
 <script type="importmap">
 {
@@ -62,6 +67,7 @@ const P = {
   fallSpeed:    2.1,
   windStrength: 1.1,
   burstCount:   14,
+  stickerCount: 12,   // 当前贴纸种类数（上传后变化，只读显示）
   // —— 背景扭曲 ——
   mixRadius:    0.72,
   amplitude:    0.55
@@ -89,10 +95,16 @@ const fbo=new THREE.WebGLRenderTarget(innerWidth,innerHeight,{samples:4});
 /* ============================================================
  *  贴纸系统
  * ============================================================ */
+/* —— 贴纸图集：默认 12 款程序化 + 运行时整体替换上传图片。纹理上限 2048² —— */
+const COLS=4, ROWS=4, CELL=512, MAX_STICKERS=COLS*ROWS;   // 2048×2048，最多 16 格
+let atlasCanvas=null, atlasCtx=null;     // makeStickerAtlas 内赋值，供 rebuildAtlas 重绘
+let drawDefault=null;                    // makeStickerAtlas 内赋值：绘制默认 12 款到指定 ctx
+let customImages=[];                     // 非空时整体替换默认 12 款
+function totalStickers(){ return customImages.length>0 ? customImages.length : 12; }
+
 function makeStickerAtlas(){
-  const COLS=4,ROWS=3,CELL=512;
   const c=document.createElement('canvas');c.width=COLS*CELL;c.height=ROWS*CELL;
-  const ctx=c.getContext('2d');
+  const ctx=c.getContext('2d');atlasCanvas=c;atlasCtx=ctx;
   const INK='#1c1c1c',GREEN='#7fb069',PINE='#2d4a3e',CREAM='#f0efe9',RUST='#c96f4a';
   const circle=(g,r)=>g.arc(0,0,r,0,Math.PI*2);
   const blob=(g,r)=>{g.moveTo(r,0);for(let a=0;a<=Math.PI*2+0.1;a+=Math.PI/5){const rr=r*(0.82+0.18*Math.sin(a*3));g.lineTo(Math.cos(a)*rr,Math.sin(a)*rr);}};
@@ -115,8 +127,8 @@ function makeStickerAtlas(){
     (x,y)=>{stickerBase(ctx,CELL,x,y,diamond);ctx.save();ctx.translate(x+CELL/2,y+CELL/2);[70,45,20].forEach((r,i)=>{ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.fillStyle=[PINE,CREAM,RUST][i];ctx.fill();ctx.lineWidth=4;ctx.strokeStyle=INK;ctx.stroke();});ctx.restore();}
   ];
   function stickerBase(ctx,CELL,x,y,shape){ctx.save();ctx.translate(x+CELL/2,y+CELL/2);ctx.beginPath();shape(ctx,190);ctx.fillStyle='#fff';ctx.fill();ctx.lineWidth=10;ctx.strokeStyle=INK;ctx.stroke();ctx.beginPath();shape(ctx,150);ctx.fillStyle=CREAM;ctx.fill();ctx.lineWidth=6;ctx.strokeStyle=INK;ctx.stroke();ctx.restore();}
-  painters.forEach((fn,i)=>{const col=i%COLS,row=Math.floor(i/COLS);fn(col*CELL,row*CELL);});
-  ctx.globalAlpha=0.05;for(let i=0;i<9000;i++){ctx.fillStyle=Math.random()<0.5?'#000':'#fff';ctx.fillRect(Math.random()*c.width,Math.random()*c.height,2,2);}ctx.globalAlpha=1;
+  drawDefault=(g)=>{painters.forEach((fn,i)=>{const col=i%COLS,row=Math.floor(i/COLS);fn(col*CELL,row*CELL);});g.globalAlpha=0.05;for(let i=0;i<9000;i++){g.fillStyle=Math.random()<0.5?'#000':'#fff';g.fillRect(Math.random()*g.canvas.width,Math.random()*g.canvas.height,2,2);}g.globalAlpha=1;};
+  drawDefault(ctx);
   const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=4;return tex;
 }
 
@@ -127,7 +139,7 @@ const stickerMat=new THREE.ShaderMaterial({
   vertexShader:`attribute float aIdx;attribute float aOp;varying vec2 vUv;varying float vI;varying float vO;
     void main(){vUv=uv;vI=aIdx;vO=aOp;gl_Position=projectionMatrix*modelViewMatrix*instanceMatrix*vec4(position,1.0);}`,
   fragmentShader:`uniform sampler2D uAtlas;varying vec2 vUv;varying float vI;varying float vO;
-    void main(){float col=mod(vI,4.0);float row=floor(vI/4.0);vec2 uv=(vUv+vec2(col,row))/vec2(4.0,3.0);
+    void main(){float col=mod(vI,4.0);float row=floor(vI/4.0);vec2 uv=(vUv+vec2(col,row))/vec2(4.0,4.0);
     vec4 c=texture2D(uAtlas,uv);if(c.a*vO<0.02)discard;gl_FragColor=vec4(c.rgb,c.a*vO);}`,
   transparent:true,depthWrite:false,side:THREE.DoubleSide
 });
@@ -149,7 +161,7 @@ function spawn(origin,isOneShot){
     rotation:Math.random()*Math.PI*2,rotationSpeed:(Math.random()-0.5)*0.9*2,
     scaleBase:(isOneShot?0.85:1.1)*(1+(Math.random()-0.5)*2*P.sizeVariance),  // 基础大小(含随机度)，实时由 P.stickerSize 缩放
     windPhase:Math.random()*Math.PI*2,windAmplitude:0.3+Math.random()*P.windStrength,
-    idx:Math.floor(Math.random()*12),isOneShot,dead:false,hasStarted:true,
+    idx:Math.floor(Math.random()*totalStickers()),isOneShot,dead:false,hasStarted:true,
     emitAt:emitClock++,bornAt:performance.now()/1000,x:0,y:0,op:0
   };p.x=p.originX;p.y=p.originY;particles.push(p);
   if(isOneShot){const shots=particles.filter(q=>q.isOneShot&&!q.dead);if(shots.length>384){shots.sort((a,b)=>a.emitAt-b.emitAt);shots.slice(0,shots.length-384).forEach(q=>q.dead=true);}}
@@ -159,7 +171,7 @@ function updateStickers(dt,time){
   for(const p of particles){
     if(!p.hasStarted)continue;const age=time-p.bornAt;
     p.y-=p.fallSpeed*dt;p.x=p.originX+Math.sin(time+p.windPhase)*p.windAmplitude;p.rotation+=p.rotationSpeed*dt;p.op=Math.min(1,age*3);
-    if(p.y<-b.h/2-6){if(p.isOneShot){p.dead=true;continue;}p.originX=(Math.random()-0.5)*b.w*1.15;p.originY=b.h/2+4;p.y=p.originY;p.bornAt=time;p.idx=Math.floor(Math.random()*12);}
+    if(p.y<-b.h/2-6){if(p.isOneShot){p.dead=true;continue;}p.originX=(Math.random()-0.5)*b.w*1.15;p.originY=b.h/2+4;p.y=p.originY;p.bornAt=time;p.idx=Math.floor(Math.random()*totalStickers());}
     if(p.dead)continue;if(w>=MAX)break;
     dummy.position.set(p.x,p.y,p.originZ);dummy.rotation.z=p.rotation;const s=p.scaleBase*P.stickerSize*p.op;dummy.scale.set(s,s,s);dummy.updateMatrix();
     sMesh.setMatrixAt(w,dummy.matrix);aIdx[w]=p.idx;aOp[w]=p.op;w++;
@@ -218,10 +230,55 @@ fStk.add(P,'sizeVariance',0,1,0.05).name('sizeVariance 大小随机');
 fStk.add(P,'fallSpeed',0.5,5,0.1).name('fallSpeed 下落');
 fStk.add(P,'windStrength',0,3,0.1).name('wind 风摆');
 fStk.add(P,'burstCount',2,40,1).name('burst 爆发数');
+fStk.add({up:()=>document.getElementById('stickerUpload').click()},'up').name('＋上传图片(整体替换)');
+fStk.add({up:()=>document.getElementById('stickerFolder').click()},'up').name('＋上传文件夹(整体替换)');
+fStk.add({def:restoreDefault},'def').name('↺恢复默认贴纸');
+fStk.add(P,'stickerCount').name('sticker 贴纸种类数').listen().disable();
 
 const fBg=gui.addFolder('Background 背景扭曲');
 fBg.add(P,'mixRadius',0,1,0.01).name('mixRadius 影响半径').onChange(v=>dU.uMixRadius.value=v);
 fBg.add(P,'amplitude',0,1.5,0.01).name('amplitude 扭曲强度').onChange(v=>dU.uAmplitude.value=v);
+
+/* —— 上传图片 / 文件夹：整体替换贴纸（非追加）。纹理上限 2048²，最多 16 张 —— */
+const stickerUpload=document.getElementById('stickerUpload');
+const stickerFolder=document.getElementById('stickerFolder');
+function showStatus(msg){ const el=document.getElementById('status'); if(!el) return; el.textContent=msg; el.classList.add('show'); clearTimeout(showStatus._t); showStatus._t=setTimeout(()=>el.classList.remove('show'),3200); }
+function loadImages(files){
+  const imgs=Array.from(files).filter(f=>!f.type || f.type.startsWith('image/'));
+  const urls=imgs.map(f=>URL.createObjectURL(f));
+  return Promise.allSettled(imgs.map((f,i)=>new Promise((res,rej)=>{ const img=new Image(); img.onload=()=>res(img); img.onerror=()=>rej(new Error('decode failed')); img.src=urls[i]; })))
+    .then(results=>{ const ok=[]; let skipped=0; results.forEach(r=>{ r.status==='fulfilled'?ok.push(r.value):skipped++; }); urls.forEach(u=>URL.revokeObjectURL(u)); return {ok,skipped}; });
+}
+function drawImageCell(ctx,img,cell){
+  const col=cell%COLS, row=Math.floor(cell/COLS), x=col*CELL, y=row*CELL;
+  ctx.save(); ctx.translate(x+CELL/2, y+CELL/2);
+  ctx.beginPath(); ctx.arc(0,0,190,0,Math.PI*2); ctx.fillStyle='#fff'; ctx.fill();
+  ctx.lineWidth=10; ctx.strokeStyle='#1c1c1c'; ctx.stroke();
+  ctx.beginPath(); ctx.arc(0,0,150,0,Math.PI*2); ctx.fillStyle='#f0efe9'; ctx.fill();
+  ctx.save(); ctx.beginPath(); ctx.arc(0,0,150,0,Math.PI*2); ctx.clip();
+  const iw=img.width||512, ih=img.height||512, s=Math.max(iw,ih);
+  const dw=iw/s*300, dh=ih/s*300;
+  ctx.drawImage(img, -dw/2, -dh/2, dw, dh);
+  ctx.restore(); ctx.restore();
+}
+function rebuildAtlas(){
+  const ctx=atlasCtx; ctx.clearRect(0,0,atlasCanvas.width,atlasCanvas.height);
+  if(customImages.length>0){ customImages.forEach((img,i)=>drawImageCell(ctx,img,i)); }
+  else { drawDefault(ctx); }
+  atlas.needsUpdate=true;
+}
+function applyImages(res){
+  if(!res.ok.length){ showStatus('没有可加载的图片（格式可能不支持，如 HEIC）'); return; }
+  let arr=res.ok.slice();
+  if(arr.length>MAX_STICKERS){ arr=arr.slice(0,MAX_STICKERS); }
+  customImages=arr; rebuildAtlas();
+  particles.forEach(p=>{ if(!p.dead) p.idx=Math.floor(Math.random()*totalStickers()); });
+  P.stickerCount=arr.length;
+  showStatus('已用 '+arr.length+' 张图片整体替换贴纸'+(res.skipped?('，跳过 '+res.skipped+' 张'):''));
+}
+function restoreDefault(){ customImages=[]; rebuildAtlas(); particles.forEach(p=>{ if(!p.dead) p.idx=Math.floor(Math.random()*totalStickers()); }); P.stickerCount=12; showStatus('已恢复默认 12 款贴纸'); }
+stickerUpload.addEventListener('change',e=>{ loadImages(e.target.files).then(applyImages); e.target.value=''; });
+stickerFolder.addEventListener('change',e=>{ loadImages(e.target.files).then(applyImages); e.target.value=''; });
 
 function syncAmbient(){
   const cur=particles.filter(p=>!p.isOneShot&&!p.dead);
