@@ -246,7 +246,10 @@ function showStatus(msg){ const el=document.getElementById('status'); if(!el) re
 function loadImages(files){
   const imgs=Array.from(files).filter(f=>!f.type || f.type.startsWith('image/'));
   const urls=imgs.map(f=>URL.createObjectURL(f));
-  return Promise.allSettled(imgs.map((f,i)=>new Promise((res,rej)=>{ const img=new Image(); img.onload=()=>res(img); img.onerror=()=>rej(new Error('decode failed')); img.src=urls[i]; })))
+  return Promise.allSettled(imgs.map((f,i)=>new Promise((res,rej)=>{ const img=new Image(); img.src=urls[i];
+    if(img.decode){ img.decode().then(()=>res(img)).catch(()=>rej(new Error('decode failed'))); }   // 强制像素解码完成，避免 revoke 后 Safari 画不出
+    else { img.onload=()=>res(img); img.onerror=()=>rej(new Error('decode failed')); }
+  })))
     .then(results=>{ const ok=[]; let skipped=0; results.forEach(r=>{ r.status==='fulfilled'?ok.push(r.value):skipped++; }); urls.forEach(u=>URL.revokeObjectURL(u)); return {ok,skipped}; });
 }
 function drawImageCell(ctx,img,cell){
