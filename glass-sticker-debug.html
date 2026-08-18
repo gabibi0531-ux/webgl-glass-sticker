@@ -43,10 +43,23 @@
 <script type="importmap">
 {
   "imports": {
-    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
-    "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19.2/+esm"
+    "three": "./vendor/three.module.js",
+    "lil-gui": "./vendor/lil-gui.esm.min.js"
   }
 }
+</script>
+
+<script>
+/* 加载兜底：若模块脚本（含依赖）加载/执行失败，显示原因而非无限 loading */
+window.addEventListener('error', e=>{
+  const l=document.getElementById('loader');
+  if(l && !l.classList.contains('done')){
+    l.style.opacity=1; const f=document.getElementById('loaderFill'); if(f) f.style.width='100%';
+    const tip=document.getElementById('tip');
+    const msg=(e.message||'')+((e.filename)?(' @ '+e.filename.split('/').pop()):'');
+    if(tip) tip.textContent='⚠ 加载失败：'+(msg||'资源载入错误')+' —— 请强刷(Cmd/Ctrl+Shift+R)重试';
+  }
+}, true);
 </script>
 
 <script type="module">
