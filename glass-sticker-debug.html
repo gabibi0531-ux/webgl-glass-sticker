@@ -228,7 +228,6 @@ fStk.add(P,'fallSpeed',0.5,5,0.1).name('fallSpeed 下落');
 fStk.add(P,'windStrength',0,3,0.1).name('wind 风摆');
 fStk.add(P,'burstCount',2,40,1).name('burst 爆发数');
 fStk.add(P,'clickBurst').name('clickBurst 点击爆发');
-fStk.add({burstCenter:burstAtCenter},'burstCenter').name('＋爆发一簇(中心)');
 fStk.add({upload:()=>stickerUpload.click()},'upload').name('＋上传贴纸图片');
 fStk.add(P,'customCount',0,MAX_CUSTOM,1).name('custom 自定义数').listen().disable();
 
@@ -248,14 +247,8 @@ function syncAmbient(){
 }
 
 /* ============================================================
- *  添加贴纸的通道：中心爆发按钮 + 上传自定义贴纸图片
+ *  添加贴纸的通道：上传自定义贴纸图片
  * ============================================================ */
-function burstAtCenter(){
-  ndc.set(0,0); raycaster.setFromCamera(ndc,camera);
-  const o=raycaster.ray.origin,d=raycaster.ray.direction,t=-o.z/d.z;
-  const hit=new THREE.Vector3().copy(o).addScaledVector(d,t);
-  for(let i=0;i<P.burstCount;i++)spawn(hit,true);
-}
 function drawCustomSticker(img){
   if(P.customCount>=MAX_CUSTOM){ alert('自定义贴纸已达上限 ('+MAX_CUSTOM+')'); return; }
   const cell=12+P.customCount, col=cell%COLS, row=Math.floor(cell/COLS);
